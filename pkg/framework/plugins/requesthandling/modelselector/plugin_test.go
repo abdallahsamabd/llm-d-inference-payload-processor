@@ -18,13 +18,25 @@ package modelselector
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+
+	ctrlbuilder "sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/datalayer"
 	fwkplugin "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/requesthandling"
 )
+
+// fakeHandle implements plugin.Handle for unit tests, providing only a Datastore.
+type fakeHandle struct{ ds datalayer.Datastore }
+
+func (f *fakeHandle) Context() context.Context                { return context.Background() }
+func (f *fakeHandle) Client() client.Client                   { return nil }
+func (f *fakeHandle) ReconcilerBuilder() *ctrlbuilder.Builder { return nil }
+func (f *fakeHandle) Datastore() datalayer.Datastore          { return f.ds }
 
 func newTestDatastore(modelNames ...string) datalayer.Datastore {
 	ds := datastore.NewFakeDataStore()
@@ -36,16 +48,17 @@ func newTestDatastore(modelNames ...string) datalayer.Datastore {
 
 func TestProcessRequestWritesSelectedModelToBodyAndCycleState(t *testing.T) {
 	ds := newTestDatastore("model-a", "model-b", "model-c")
-	plugin, err := NewModelSelectorPlugin(ds)
+	plugin, err := ModelSelectorPluginFactory(ModelSelectorPluginType, json.RawMessage(`{}`), &fakeHandle{ds: ds})
 	if err != nil {
 		t.Fatalf("failed to create plugin: %v", err)
 	}
+	p := plugin.(*ModelSelectorPlugin)
 
 	request := requesthandling.NewInferenceRequest()
 	request.Body["model"] = "auto"
 	cycleState := fwkplugin.NewCycleState()
 
-	err = plugin.ProcessRequest(context.Background(), cycleState, request)
+	err = p.ProcessRequest(context.Background(), cycleState, request)
 	if err != nil {
 		t.Fatalf("ProcessRequest failed: %v", err)
 	}
@@ -70,16 +83,17 @@ func TestProcessRequestWritesSelectedModelToBodyAndCycleState(t *testing.T) {
 func TestProcessRequestSelectsFromDatastoreModels(t *testing.T) {
 	candidates := []string{"llama-70b", "llama-8b", "mistral-7b"}
 	ds := newTestDatastore(candidates...)
-	plugin, err := NewModelSelectorPlugin(ds)
+	plugin, err := ModelSelectorPluginFactory(ModelSelectorPluginType, json.RawMessage(`{}`), &fakeHandle{ds: ds})
 	if err != nil {
 		t.Fatalf("failed to create plugin: %v", err)
 	}
+	p := plugin.(*ModelSelectorPlugin)
 
 	request := requesthandling.NewInferenceRequest()
 	request.Body["model"] = "auto"
 	cycleState := fwkplugin.NewCycleState()
 
-	err = plugin.ProcessRequest(context.Background(), cycleState, request)
+	err = p.ProcessRequest(context.Background(), cycleState, request)
 	if err != nil {
 		t.Fatalf("ProcessRequest failed: %v", err)
 	}
@@ -99,31 +113,47 @@ func TestProcessRequestSelectsFromDatastoreModels(t *testing.T) {
 
 func TestProcessRequestFailsWithEmptyDatastore(t *testing.T) {
 	ds := newTestDatastore() // no models
-	plugin, err := NewModelSelectorPlugin(ds)
+	plugin, err := ModelSelectorPluginFactory(ModelSelectorPluginType, json.RawMessage(`{}`), &fakeHandle{ds: ds})
 	if err != nil {
 		t.Fatalf("failed to create plugin: %v", err)
 	}
+	p := plugin.(*ModelSelectorPlugin)
 
 	request := requesthandling.NewInferenceRequest()
 	request.Body["model"] = "auto"
 	cycleState := fwkplugin.NewCycleState()
 
-	err = plugin.ProcessRequest(context.Background(), cycleState, request)
+	err = p.ProcessRequest(context.Background(), cycleState, request)
 	if err == nil {
 		t.Fatal("expected error with empty datastore")
 	}
 }
 
-func TestNewModelSelectorPluginRejectsNilDatastore(t *testing.T) {
-	_, err := NewModelSelectorPlugin(nil)
+func TestModelSelectorPluginFactoryRejectsNilDatastore(t *testing.T) {
+	_, err := ModelSelectorPluginFactory(ModelSelectorPluginType, json.RawMessage(`{}`), &fakeHandle{ds: nil})
 	if err == nil {
 		t.Fatal("expected error for nil datastore")
 	}
 }
 
+func TestFactoryWiresDatastoreFromHandle(t *testing.T) {
+	ds := newTestDatastore("model-a")
+	p, err := ModelSelectorPluginFactory(ModelSelectorPluginType, json.RawMessage(`{}`), &fakeHandle{ds: ds})
+	if err != nil {
+		t.Fatalf("factory returned error: %v", err)
+	}
+	msp, ok := p.(*ModelSelectorPlugin)
+	if !ok {
+		t.Fatalf("expected *ModelSelectorPlugin, got %T", p)
+	}
+	if msp.datastore != ds {
+		t.Error("factory did not wire the datastore from the handle")
+	}
+}
+
 func TestTypedName(t *testing.T) {
 	ds := newTestDatastore("model-a")
-	plugin, _ := NewModelSelectorPlugin(ds)
+	plugin, _ := ModelSelectorPluginFactory(ModelSelectorPluginType, json.RawMessage(`{}`), &fakeHandle{ds: ds})
 	if plugin.TypedName().Type != ModelSelectorPluginType {
 		t.Errorf("expected type %q, got %q", ModelSelectorPluginType, plugin.TypedName().Type)
 	}

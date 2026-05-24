@@ -43,11 +43,7 @@ var _ requesthandling.RequestProcessor = &ModelSelectorPlugin{}
 
 // ModelSelectorPluginFactory is the factory function for the ModelSelector RequestProcessor plugin.
 func ModelSelectorPluginFactory(name string, _ json.RawMessage, handle plugin.Handle) (plugin.Plugin, error) {
-	// TODO: once PR #84 merges, get Datastore from handle via handle.Datastore()
-	// For now, Datastore is passed directly to the constructor.
-	_ = handle
-
-	return nil, fmt.Errorf("'%s' plugin must be created via NewModelSelectorPlugin, not via factory (Datastore not yet available in Handle)", ModelSelectorPluginType)
+	return NewModelSelectorPlugin(handle.Datastore())
 }
 
 // NewModelSelectorPlugin creates a ModelSelector RequestProcessor plugin.

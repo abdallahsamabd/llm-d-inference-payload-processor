@@ -19,15 +19,17 @@ package modelselector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	logutil "github.com/llm-d/llm-d-inference-payload-processor/pkg/common/observability/logging"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore"
-	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/datalayer"
-	fwkms "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/modelselector"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/modelselector"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/requesthandling"
 	ms "github.com/llm-d/llm-d-inference-payload-processor/pkg/modelselector"
 )
 
@@ -38,10 +40,10 @@ const (
 	SelectedModelKey = "selected-model"
 )
 
-var _ framework.RequestProcessor = &ModelSelectorPlugin{}
+var _ requesthandling.RequestProcessor = &ModelSelectorPlugin{}
 
 // ModelSelectorPluginFactory is the factory function for the ModelSelector RequestProcessor plugin.
-func ModelSelectorPluginFactory(name string, _ json.RawMessage, handle framework.Handle) (framework.Plugin, error) {
+func ModelSelectorPluginFactory(name string, _ json.RawMessage, handle plugin.Handle) (plugin.Plugin, error) {
 	// TODO: once PR #84 merges, get Datastore from handle via handle.Datastore()
 	// For now, Datastore is passed directly to the constructor.
 	_ = handle
@@ -65,7 +67,7 @@ func NewModelSelectorPlugin(ds datastore.Datastore) (*ModelSelectorPlugin, error
 	selector := ms.NewModelSelector(profile)
 
 	return &ModelSelectorPlugin{
-		typedName: framework.TypedName{Type: ModelSelectorPluginType, Name: ModelSelectorPluginType},
+		typedName: plugin.TypedName{Type: ModelSelectorPluginType, Name: ModelSelectorPluginType},
 		selector:  selector,
 		datastore: ds,
 	}, nil
@@ -75,23 +77,23 @@ func NewModelSelectorPlugin(ds datastore.Datastore) (*ModelSelectorPlugin, error
 // pipeline (Filter → Score → Pick) to select a model for the request.
 // Candidate models are read from the Datastore on each request.
 type ModelSelectorPlugin struct {
-	typedName framework.TypedName
+	typedName plugin.TypedName
 	selector  *ms.ModelSelector
 	datastore datastore.Datastore
 }
 
-func (p *ModelSelectorPlugin) TypedName() framework.TypedName {
+func (p *ModelSelectorPlugin) TypedName() plugin.TypedName {
 	return p.typedName
 }
 
 // ProcessRequest reads candidate models from the Datastore, runs model
 // selection, and writes the selected model into the request body and CycleState.
-func (p *ModelSelectorPlugin) ProcessRequest(ctx context.Context, cycleState *framework.CycleState, request *framework.InferenceRequest) error {
+func (p *ModelSelectorPlugin) ProcessRequest(ctx context.Context, cycleState *plugin.CycleState, request *requesthandling.InferenceRequest) error {
 	logger := log.FromContext(ctx)
 
 	candidateModels := p.loadCandidateModels()
 	if len(candidateModels) == 0 {
-		return fmt.Errorf("no candidate models available in datastore")
+		return errors.New("no candidate models available in datastore")
 	}
 
 	result, err := p.selector.Select(ctx, request, cycleState, candidateModels)
@@ -123,11 +125,11 @@ func (p *ModelSelectorPlugin) loadCandidateModels() []datalayer.Model {
 // pickers are wired with factory functions.
 type defaultPicker struct{}
 
-func (p *defaultPicker) TypedName() framework.TypedName {
-	return framework.TypedName{Type: "default-picker", Name: "default-picker"}
+func (p *defaultPicker) TypedName() plugin.TypedName {
+	return plugin.TypedName{Type: "default-picker", Name: "default-picker"}
 }
 
-func (p *defaultPicker) Pick(_ context.Context, _ *framework.CycleState, scoredModels []*fwkms.ScoredModel) *fwkms.ProfileRunResult {
+func (p *defaultPicker) Pick(_ context.Context, _ *plugin.CycleState, scoredModels []*modelselector.ScoredModel) *modelselector.ProfileRunResult {
 	if len(scoredModels) == 0 {
 		return nil
 	}
@@ -137,5 +139,5 @@ func (p *defaultPicker) Pick(_ context.Context, _ *framework.CycleState, scoredM
 			best = sm
 		}
 	}
-	return &fwkms.ProfileRunResult{TargetModel: best.Model}
+	return &modelselector.ProfileRunResult{TargetModel: best.Model}
 }

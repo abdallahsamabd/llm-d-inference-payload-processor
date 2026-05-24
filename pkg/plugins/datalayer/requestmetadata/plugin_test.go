@@ -32,10 +32,10 @@ import (
 // fakeHandle implements plugin.Handle for unit tests, providing only a Datastore.
 type fakeHandle struct{ ds datastore.Datastore }
 
-func (f *fakeHandle) Context() context.Context               { return context.Background() }
-func (f *fakeHandle) Client() client.Client                  { return nil }
+func (f *fakeHandle) Context() context.Context                { return context.Background() }
+func (f *fakeHandle) Client() client.Client                   { return nil }
 func (f *fakeHandle) ReconcilerBuilder() *ctrlbuilder.Builder { return nil }
-func (f *fakeHandle) Datastore() datastore.Datastore         { return f.ds }
+func (f *fakeHandle) Datastore() datastore.Datastore          { return f.ds }
 
 // makeRequestEvent creates a RequestEventType event with model and max_tokens.
 func makeRequestEvent(model string, maxTokens float64) dlsrc.Event {

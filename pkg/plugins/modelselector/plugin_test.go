@@ -21,11 +21,12 @@ import (
 	"testing"
 
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/datastore"
-	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework"
+	fwkplugin "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/requesthandling"
 )
 
 func newTestDatastore(modelNames ...string) datastore.Datastore {
-	ds := datastore.NewStore()
+	ds := datastore.NewFakeDataStore()
 	for _, name := range modelNames {
 		ds.GetOrCreateModel(name)
 	}
@@ -39,9 +40,9 @@ func TestProcessRequestWritesSelectedModelToBodyAndCycleState(t *testing.T) {
 		t.Fatalf("failed to create plugin: %v", err)
 	}
 
-	request := framework.NewInferenceRequest()
+	request := requesthandling.NewInferenceRequest()
 	request.Body["model"] = "auto"
-	cycleState := framework.NewCycleState()
+	cycleState := fwkplugin.NewCycleState()
 
 	err = plugin.ProcessRequest(context.Background(), cycleState, request)
 	if err != nil {
@@ -56,7 +57,7 @@ func TestProcessRequestWritesSelectedModelToBodyAndCycleState(t *testing.T) {
 		t.Error("expected model field to be replaced with selected model, still 'auto'")
 	}
 
-	storedModel, err := framework.ReadCycleStateKey[string](cycleState, SelectedModelKey)
+	storedModel, err := fwkplugin.ReadCycleStateKey[string](cycleState, SelectedModelKey)
 	if err != nil {
 		t.Fatalf("expected selected model in CycleState: %v", err)
 	}
@@ -73,9 +74,9 @@ func TestProcessRequestSelectsFromDatastoreModels(t *testing.T) {
 		t.Fatalf("failed to create plugin: %v", err)
 	}
 
-	request := framework.NewInferenceRequest()
+	request := requesthandling.NewInferenceRequest()
 	request.Body["model"] = "auto"
-	cycleState := framework.NewCycleState()
+	cycleState := fwkplugin.NewCycleState()
 
 	err = plugin.ProcessRequest(context.Background(), cycleState, request)
 	if err != nil {
@@ -102,9 +103,9 @@ func TestProcessRequestFailsWithEmptyDatastore(t *testing.T) {
 		t.Fatalf("failed to create plugin: %v", err)
 	}
 
-	request := framework.NewInferenceRequest()
+	request := requesthandling.NewInferenceRequest()
 	request.Body["model"] = "auto"
-	cycleState := framework.NewCycleState()
+	cycleState := fwkplugin.NewCycleState()
 
 	err = plugin.ProcessRequest(context.Background(), cycleState, request)
 	if err == nil {

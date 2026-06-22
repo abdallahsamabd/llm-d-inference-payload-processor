@@ -30,6 +30,7 @@ import (
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/datalayer"
 	dlsrc "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/datalayer/datasource"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/datalayer/healthcheck"
 )
 
 const PluginType = "model-config-datasource"
@@ -44,7 +45,8 @@ type PluginConfig struct {
 
 // ModelConfiguration is a single model entry in the config file.
 type ModelConfiguration struct {
-	Name string `json:"name"`
+	Name        string                        `json:"name"`
+	HealthCheck *healthcheck.HealthCheckConfig `json:"healthCheck,omitempty"`
 }
 
 // ModelsConfig is the schema of the JSON config file.
@@ -191,7 +193,12 @@ func (c *ModelConfigDataSource) syncModels(ctx context.Context) error {
 			continue
 		}
 		desired[m.Name] = struct{}{}
-		c.ds.GetOrCreateModel(m.Name)
+		model := c.ds.GetOrCreateModel(m.Name)
+		if m.HealthCheck != nil {
+			model.GetAttributes().Put(healthcheck.HealthCheckConfigKey, *m.HealthCheck)
+		} else {
+			model.GetAttributes().Delete(healthcheck.HealthCheckConfigKey)
+		}
 	}
 
 	for _, existing := range c.ds.Models() {

@@ -48,6 +48,9 @@ import (
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/plugin"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/interface/requesthandling"
 	requestmetadata "github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/datalayer/requestmetadata"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/datalayer/healthcheck"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/datalayer/modeldiscovery"
+	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/modelselector/filter/healthfilter"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/modelselector/picker/maxscore"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/modelselector/picker/random"
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/framework/plugins/modelselector/picker/weightedrandom"
@@ -283,6 +286,11 @@ func (r *Runner) registerInTreePlugins() {
 	plugin.Register(weightedrandom.WeightedRandomPickerType, weightedrandom.WeightedRandomPickerFactory)
 	plugin.Register(modelselectorplugin.ModelSelectorPluginType, modelselectorplugin.ModelSelectorPluginFactory)
 	plugin.Register(inflightrequestsscorer.PluginType, inflightrequestsscorer.ScorerFactory)
+	// health check plugins
+	plugin.Register(healthcheck.PluginType, healthcheck.DatasourceFactory)
+	plugin.Register(healthfilter.PluginType, healthfilter.FilterFactory)
+	// model discovery plugin (auto-discovers pods from InferencePools)
+	plugin.Register(modeldiscovery.PluginType, modeldiscovery.DatasourceFactory)
 }
 
 // registerHealthServer adds the Health gRPC server as a Runnable to the given manager.

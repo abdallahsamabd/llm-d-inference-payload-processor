@@ -34,27 +34,31 @@ import (
 	"github.com/llm-d/llm-d-inference-payload-processor/pkg/metrics"
 )
 
-// HandleResponseHeaders extracts response headers into reqCtx and returns
-// the ext-proc header response.
-func (s *Server) HandleResponseHeaders(ctx context.Context, reqCtx *RequestContext, headers *eppb.HttpHeaders) []*eppb.ProcessingResponse {
+// HandleResponseHeaders extracts response headers into reqCtx, runs any
+// response-headers post-processors, and returns the ext-proc header response.
+func (s *Server) HandleResponseHeaders(ctx context.Context, reqCtx *RequestContext, headers *eppb.HttpHeaders) ([]*eppb.ProcessingResponse, error) {
 	if headers != nil && headers.Headers != nil {
 		for _, header := range headers.Headers.Headers {
 			reqCtx.Response.Headers[header.Key] = envoy.GetHeaderValue(header)
 		}
 	}
 
+	if err := s.runResponseHeadersProcessors(ctx, reqCtx.CycleState, reqCtx.Response); err != nil {
+		return nil, err
+	}
+
 	if !headers.GetEndOfStream() {
 		log.FromContext(ctx).V(logutil.VERBOSE).Info("captured response headers, deferring response until body arrives...")
-		return nil
+		return nil, nil
 	}
 	// EndOfStream means no body is expected, return HeadersResponse immediately
 	return []*eppb.ProcessingResponse{
 		{
 			Response: &eppb.ProcessingResponse_ResponseHeaders{
-				ResponseHeaders: &eppb.HeadersResponse{},
+				ResponseHeaders: buildHeadersResponse(reqCtx),
 			},
 		},
-	}
+	}, nil
 }
 
 // HandleResponseBody handles response bodies by executing response plugins in order.
@@ -76,12 +80,12 @@ func (s *Server) HandleResponseBody(ctx context.Context, reqCtx *RequestContext,
 	hasPostProcessors := len(s.postProcessors) > 0
 
 	if !hasProfilePlugins && !hasPostProcessors {
-		return s.generateEmptyResponseBodyResponse(responseBodyBytes), nil
+		return s.generatePassthroughResponseBodyResponse(reqCtx, responseBodyBytes), nil
 	}
 
 	if err := json.Unmarshal(responseBodyBytes, &reqCtx.Response.Body); err != nil {
 		logger.Error(err, "Failed to parse response body as JSON, skipping response plugins")
-		return s.generateEmptyResponseBodyResponse(responseBodyBytes), nil
+		return s.generatePassthroughResponseBodyResponse(reqCtx, responseBodyBytes), nil
 	}
 
 	if hasProfilePlugins {
@@ -127,18 +131,41 @@ func (s *Server) HandleResponseBody(ctx context.Context, reqCtx *RequestContext,
 	return ret, nil
 }
 
-// generateEmptyResponseBodyResponse builds a streaming response with an empty
-// ResponseHeaders followed by chunked body responses via AddStreamedResponseBody.
-func (s *Server) generateEmptyResponseBodyResponse(responseBodyBytes []byte) []*eppb.ProcessingResponse {
+// generatePassthroughResponseBodyResponse builds a streaming response with a
+// ResponseHeaders (including any header mutations from the response-headers phase)
+// followed by chunked body responses via AddStreamedResponseBody.
+func (s *Server) generatePassthroughResponseBodyResponse(reqCtx *RequestContext, responseBodyBytes []byte) []*eppb.ProcessingResponse {
 	responses := []*eppb.ProcessingResponse{
 		{
 			Response: &eppb.ProcessingResponse_ResponseHeaders{
-				ResponseHeaders: &eppb.HeadersResponse{},
+				ResponseHeaders: buildHeadersResponse(reqCtx),
 			},
 		},
 	}
 	responses = envoy.AddStreamedResponseBody(responses, responseBodyBytes)
 	return responses
+}
+
+// buildHeadersResponse constructs a HeadersResponse that includes any header
+// mutations set during the response-headers phase. Returns an empty
+// HeadersResponse when there are no mutations to avoid sending unnecessary
+// proto fields.
+func buildHeadersResponse(reqCtx *RequestContext) *eppb.HeadersResponse {
+	mutatedHeaders := reqCtx.Response.MutatedHeaders()
+	removedHeaders := reqCtx.Response.RemovedHeaders()
+
+	if len(mutatedHeaders) == 0 && len(removedHeaders) == 0 {
+		return &eppb.HeadersResponse{}
+	}
+
+	return &eppb.HeadersResponse{
+		Response: &eppb.CommonResponse{
+			HeaderMutation: &eppb.HeaderMutation{
+				SetHeaders:    envoy.GenerateHeadersMutation(mutatedHeaders),
+				RemoveHeaders: removedHeaders,
+			},
+		},
+	}
 }
 
 // HandleResponseChunk runs ResponseChunkProcessors on a single response body chunk
@@ -213,7 +240,7 @@ func (s *Server) buildStreamedChunkResponse(reqCtx *RequestContext, chunk []byte
 	if !reqCtx.ResponseHeadersSent {
 		headerResp := &eppb.ProcessingResponse{
 			Response: &eppb.ProcessingResponse_ResponseHeaders{
-				ResponseHeaders: &eppb.HeadersResponse{},
+				ResponseHeaders: buildHeadersResponse(reqCtx),
 			},
 		}
 		responses = append([]*eppb.ProcessingResponse{headerResp}, responses...)
@@ -232,6 +259,30 @@ func (s *Server) HandleResponseTrailers(trailers *eppb.HttpTrailers) ([]*eppb.Pr
 			},
 		},
 	}, nil
+}
+
+// runResponseHeadersProcessors executes response-headers post-processors in order.
+func (s *Server) runResponseHeadersProcessors(ctx context.Context, cycleState *plugin.CycleState, response *requesthandling.InferenceResponse) error {
+	if len(s.responseHeadersPostProcessors) == 0 {
+		return nil
+	}
+
+	logger := log.FromContext(ctx).V(logutil.DEFAULT)
+	verboseLogger := logger.V(logutil.VERBOSE)
+
+	for _, hp := range s.responseHeadersPostProcessors {
+		if verboseLogger.Enabled() {
+			verboseLogger.Info("Executing response headers plugin", "plugin", hp.TypedName())
+		}
+		before := time.Now()
+		if err := hp.ProcessResponseHeaders(ctx, cycleState, response); err != nil {
+			logger.Error(err, "Failed to execute response headers plugin", "plugin", hp.TypedName())
+			return err
+		}
+		metrics.RecordPluginProcessingLatency(responsePluginExtensionPoint, hp.TypedName().Type, hp.TypedName().Name, time.Since(before))
+	}
+
+	return nil
 }
 
 // runResponsePlugins executes response plugins in the order they were registered.

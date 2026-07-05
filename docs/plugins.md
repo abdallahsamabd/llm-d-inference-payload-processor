@@ -24,6 +24,7 @@
   - [`request-metadata-extractor`](#request-metadata-extractor)
   - [`model-config-datasource`](#model-config-datasource)
 - [Response Handling Plugins](#response-handling-plugins)
+  - [`model-name-to-header`](#model-name-to-header)
 - [Pre- and Post-Processors](#pre--and-post-processors)
 - [Configuration Example](#configuration-example)
 - [References](#references)
@@ -299,18 +300,55 @@ candidate-model set that [`model-selector`](#model-selector) reads. Reference it
 
 ## Response Handling Plugins
 
-Response-handling plugins implement the `ResponseProcessor` interface and run during a profile's
-`response` stage. **There are no in-tree response-handling plugins** — this is a framework
-extension point. To add one, implement `ResponseProcessor` and register it (see
-[Creating a Plugin][Creating a Plugin]).
+Response-handling plugins process the response on its way back to the client. There are three
+plugin interfaces:
+
+| Interface | When executed | Body access |
+|-----------|-------------|-------------|
+| `ResponseHeadersProcessor` | During the response-headers phase, before the body arrives. Works for both streaming and buffered responses. | No |
+| `ResponseProcessor` | After the full response body is buffered and parsed as JSON. Forces response buffering. | Yes |
+| `ResponseChunkProcessor` | Per-chunk as the response streams through. Cannot be mixed with `ResponseProcessor` in the same profile. | Chunk only |
+
+### `model-name-to-header`
+
+Echoes the model name that was selected during request processing back to the client as a response
+header. When [`model-selector`](#model-selector) runs, it resolves the client's request to a specific
+model and stores the result in `CycleState`; this plugin reads that stored value during the
+response-headers phase and sets the header so that clients can discover which model actually served
+their request. Because it runs at the response-headers phase (implementing `ResponseHeadersProcessor`),
+it works for both streaming and non-streaming responses. This is useful when the client sends a logical
+model name (e.g. a model group or alias) and needs to know the concrete model that was selected — for
+example, to pin follow-up requests to the same model for session affinity.
+
+**Prerequisites:** The [`model-selector`](#model-selector) plugin must be configured in the same
+profile's `request` list. If no model selection occurred (the `CycleState` key is absent), the
+plugin silently skips without error.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `headerName` | string | no | `X-Gateway-Model-Name` | Name of the response header to set. |
+
+**Source:** [`pkg/framework/plugins/responsehandling/modelnametoheader/`][src-modelnametoheader]
 
 ---
 
 ## Pre- and Post-Processors
 
-**PreProcessing** and **PostProcessing** are reserved global extension points in the config API
-(before profile selection and after the response plugins). They are **not yet invoked by the request
-path**, and there are no in-tree pre- or post-processors.
+**PreProcessing** runs before profile selection and is available as a global extension point.
+**PostProcessing** runs after the per-profile response plugins and applies to all profiles.
+
+Post-processing plugins are classified by their interface:
+
+| Interface | Phase | Forces buffering |
+|-----------|-------|-----------------|
+| `ResponseHeadersProcessor` | Response headers (before body) | No |
+| `ResponseProcessor` | Response body (after JSON unmarshal) | Yes |
+
+`model-name-to-header` is an in-tree post-processor. Because it implements
+`ResponseHeadersProcessor`, it runs in the response-headers phase and works for both streaming and
+non-streaming responses without forcing response buffering.
 
 ---
 
@@ -341,6 +379,7 @@ plugins:
 - type: inflight-requests-scorer
 - type: weighted-random-picker
 - type: request-metadata-extractor
+- type: model-name-to-header
 - type: model-config-datasource
   parameters:
     modelsPath: /etc/ipp/models.json
@@ -356,6 +395,8 @@ profiles:
     - pluginRef: inflight-requests-scorer
       weight: 2.0
     - pluginRef: weighted-random-picker
+postProcessing:
+- pluginRef: model-name-to-header
 datalayer:
   extractors:
   - pluginRef: request-metadata-extractor
@@ -392,6 +433,7 @@ For the full schema, Helm values, ConfigMaps, and proxy integration, see [Config
 [src-inflightscorer]: https://github.com/llm-d/llm-d-inference-payload-processor/tree/main/pkg/framework/plugins/modelselector/scorer/inflightrequests
 [src-requestmetadata]: https://github.com/llm-d/llm-d-inference-payload-processor/tree/main/pkg/framework/plugins/datalayer/requestmetadata
 [src-modelconfig]: https://github.com/llm-d/llm-d-inference-payload-processor/tree/main/pkg/framework/plugins/datalayer/modelconfigcollector
+[src-modelnametoheader]: https://github.com/llm-d/llm-d-inference-payload-processor/tree/main/pkg/framework/plugins/responsehandling/modelnametoheader
 [readme-single]: https://github.com/llm-d/llm-d-inference-payload-processor/blob/main/pkg/framework/plugins/requesthandling/profilepicker/single/README.md
 [readme-maxscore]: https://github.com/llm-d/llm-d-inference-payload-processor/blob/main/pkg/framework/plugins/modelselector/picker/maxscore/README.md
 [readme-random]: https://github.com/llm-d/llm-d-inference-payload-processor/blob/main/pkg/framework/plugins/modelselector/picker/random/README.md

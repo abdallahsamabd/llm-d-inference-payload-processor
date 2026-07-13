@@ -70,6 +70,53 @@ func makeResponseEvent(model string, promptTokens, completionTokens float64, omi
 	}
 }
 
+// makeAnthropicResponseEvent builds a ResponseEventType event whose usage block
+// uses Anthropic field names (input_tokens / output_tokens).
+func makeAnthropicResponseEvent(model string, inputTokens, outputTokens float64, omitUsage bool) dlsrc.Event {
+	req := requesthandling.NewInferenceRequest()
+	req.Body["model"] = model
+	resp := requesthandling.NewInferenceResponse()
+	if !omitUsage {
+		usage := map[string]any{}
+		if inputTokens > 0 {
+			usage["input_tokens"] = inputTokens
+		}
+		if outputTokens > 0 {
+			usage["output_tokens"] = outputTokens
+		}
+		resp.Body["usage"] = usage
+	}
+	return dlsrc.Event{
+		Type:    dlsrc.ResponseEventType,
+		Payload: dlsrc.ResponsePayload{Request: req, Response: resp},
+	}
+}
+
+// makeGoogleResponseEvent builds a ResponseEventType event whose usage block
+// uses Google/Gemini field names (usageMetadata.promptTokenCount / candidatesTokenCount).
+func makeGoogleResponseEvent(model string, promptTokenCount, candidatesTokenCount float64, omitUsage bool) dlsrc.Event {
+	req := requesthandling.NewInferenceRequest()
+	req.Body["model"] = model
+	resp := requesthandling.NewInferenceResponse()
+	if !omitUsage {
+		usageMetadata := map[string]any{}
+		if promptTokenCount > 0 {
+			usageMetadata["promptTokenCount"] = promptTokenCount
+		}
+		if candidatesTokenCount > 0 {
+			usageMetadata["candidatesTokenCount"] = candidatesTokenCount
+		}
+		if promptTokenCount > 0 && candidatesTokenCount > 0 {
+			usageMetadata["totalTokenCount"] = promptTokenCount + candidatesTokenCount
+		}
+		resp.Body["usageMetadata"] = usageMetadata
+	}
+	return dlsrc.Event{
+		Type:    dlsrc.ResponseEventType,
+		Payload: dlsrc.ResponsePayload{Request: req, Response: resp},
+	}
+}
+
 // setTokenPrices attaches a TokenPrices attribute to the named model in ds.
 func setTokenPrices(ds datalayer.Datastore, model string, in, out float64) {
 	ds.GetOrCreateModel(model).GetAttributes().Put(
@@ -352,6 +399,190 @@ func TestExtract_MultipleModels(t *testing.T) {
 	tolerance := 1e-10
 	if diff := q2 - wantCost2; diff < -tolerance || diff > tolerance {
 		t.Errorf("m2 Quantile(0.5) = %f, want %f", q2, wantCost2)
+	}
+}
+
+// --- Anthropic format tests ---
+
+func TestExtract_AnthropicFormat(t *testing.T) {
+	ext, ds := newTestExtractor(t)
+	setTokenPrices(ds, "claude", 3e-6, 15e-6)
+
+	ev := makeAnthropicResponseEvent("claude", 100, 50, false)
+	if err := ext.Extract(context.Background(), []dlsrc.Event{ev}); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	cd := readDigest(ds, "claude")
+	if cd == nil {
+		t.Fatal("expected CostDigest attribute to be present for Anthropic format")
+	}
+	if cd.Digest.Count() != 1 {
+		t.Errorf("digest count = %d, want 1", cd.Digest.Count())
+	}
+	wantCost := 100.0*3e-6 + 50.0*15e-6
+	got := cd.Digest.Quantile(0.5)
+	if diff := got - wantCost; diff < -1e-10 || diff > 1e-10 {
+		t.Errorf("Quantile(0.5) = %f, want %f", got, wantCost)
+	}
+}
+
+func TestExtract_AnthropicMissingFields(t *testing.T) {
+	ext, ds := newTestExtractor(t)
+	setTokenPrices(ds, "claude", 3e-6, 15e-6)
+
+	tests := []struct {
+		name string
+		ev   dlsrc.Event
+	}{
+		{"missing input_tokens", makeAnthropicResponseEvent("claude", 0, 50, false)},
+		{"missing output_tokens", makeAnthropicResponseEvent("claude", 100, 0, false)},
+		{"both missing", makeAnthropicResponseEvent("claude", 0, 0, false)},
+		{"no usage block", makeAnthropicResponseEvent("claude", 0, 0, true)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ext.Extract(context.Background(), []dlsrc.Event{tc.ev}); err != nil {
+				t.Fatalf("Extract: %v", err)
+			}
+			if readDigest(ds, "claude") != nil {
+				t.Errorf("expected no CostDigest attribute for %s", tc.name)
+			}
+		})
+	}
+}
+
+// --- Google format tests ---
+
+func TestExtract_GoogleFormat(t *testing.T) {
+	ext, ds := newTestExtractor(t)
+	setTokenPrices(ds, "gemini", 1.25e-6, 5e-6)
+
+	ev := makeGoogleResponseEvent("gemini", 200, 100, false)
+	if err := ext.Extract(context.Background(), []dlsrc.Event{ev}); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	cd := readDigest(ds, "gemini")
+	if cd == nil {
+		t.Fatal("expected CostDigest attribute to be present for Google format")
+	}
+	if cd.Digest.Count() != 1 {
+		t.Errorf("digest count = %d, want 1", cd.Digest.Count())
+	}
+	wantCost := 200.0*1.25e-6 + 100.0*5e-6
+	got := cd.Digest.Quantile(0.5)
+	if diff := got - wantCost; diff < -1e-10 || diff > 1e-10 {
+		t.Errorf("Quantile(0.5) = %f, want %f", got, wantCost)
+	}
+}
+
+func TestExtract_GoogleMissingFields(t *testing.T) {
+	ext, ds := newTestExtractor(t)
+	setTokenPrices(ds, "gemini", 1.25e-6, 5e-6)
+
+	tests := []struct {
+		name string
+		ev   dlsrc.Event
+	}{
+		{"missing promptTokenCount", makeGoogleResponseEvent("gemini", 0, 100, false)},
+		{"missing candidatesTokenCount", makeGoogleResponseEvent("gemini", 200, 0, false)},
+		{"both missing", makeGoogleResponseEvent("gemini", 0, 0, false)},
+		{"no usageMetadata block", makeGoogleResponseEvent("gemini", 0, 0, true)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ext.Extract(context.Background(), []dlsrc.Event{tc.ev}); err != nil {
+				t.Fatalf("Extract: %v", err)
+			}
+			if readDigest(ds, "gemini") != nil {
+				t.Errorf("expected no CostDigest attribute for %s", tc.name)
+			}
+		})
+	}
+}
+
+// --- Mixed format tests ---
+
+func TestExtract_MixedFormatsInBatch(t *testing.T) {
+	ext, ds := newTestExtractor(t)
+	setTokenPrices(ds, "gpt4", 2.5e-6, 10e-6)
+	setTokenPrices(ds, "claude", 3e-6, 15e-6)
+	setTokenPrices(ds, "gemini", 1.25e-6, 5e-6)
+
+	evOpenAI := makeResponseEvent("gpt4", 100, 50, false)
+	evAnthropic := makeAnthropicResponseEvent("claude", 100, 50, false)
+	evGoogle := makeGoogleResponseEvent("gemini", 100, 50, false)
+
+	if err := ext.Extract(context.Background(), []dlsrc.Event{evOpenAI, evAnthropic, evGoogle}); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	for _, tc := range []struct {
+		model    string
+		inPrice  float64
+		outPrice float64
+	}{
+		{"gpt4", 2.5e-6, 10e-6},
+		{"claude", 3e-6, 15e-6},
+		{"gemini", 1.25e-6, 5e-6},
+	} {
+		cd := readDigest(ds, tc.model)
+		if cd == nil {
+			t.Fatalf("expected CostDigest for %s", tc.model)
+		}
+		if cd.Digest.Count() != 1 {
+			t.Errorf("%s digest count = %d, want 1", tc.model, cd.Digest.Count())
+		}
+		wantCost := 100.0*tc.inPrice + 50.0*tc.outPrice
+		got := cd.Digest.Quantile(0.5)
+		if diff := got - wantCost; diff < -1e-10 || diff > 1e-10 {
+			t.Errorf("%s Quantile(0.5) = %f, want %f", tc.model, got, wantCost)
+		}
+	}
+}
+
+func TestExtract_OpenAIStillWorks(t *testing.T) {
+	ext, ds := newTestExtractor(t)
+	setTokenPrices(ds, "gpt4", 2.5e-6, 10e-6)
+
+	ev := makeResponseEvent("gpt4", 150, 75, false)
+	if err := ext.Extract(context.Background(), []dlsrc.Event{ev}); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	cd := readDigest(ds, "gpt4")
+	if cd == nil {
+		t.Fatal("expected CostDigest attribute to be present for OpenAI format")
+	}
+	if cd.Digest.Count() != 1 {
+		t.Errorf("digest count = %d, want 1", cd.Digest.Count())
+	}
+	wantCost := 150.0*2.5e-6 + 75.0*10e-6
+	got := cd.Digest.Quantile(0.5)
+	if diff := got - wantCost; diff < -1e-10 || diff > 1e-10 {
+		t.Errorf("Quantile(0.5) = %f, want %f", got, wantCost)
+	}
+}
+
+func TestExtract_UnknownFormatSkipped(t *testing.T) {
+	ext, ds := newTestExtractor(t)
+	setTokenPrices(ds, "custom", 1e-6, 1e-6)
+
+	req := requesthandling.NewInferenceRequest()
+	req.Body["model"] = "custom"
+	resp := requesthandling.NewInferenceResponse()
+	resp.Body["token_info"] = map[string]any{"in": 100.0, "out": 50.0}
+
+	ev := dlsrc.Event{
+		Type:    dlsrc.ResponseEventType,
+		Payload: dlsrc.ResponsePayload{Request: req, Response: resp},
+	}
+	if err := ext.Extract(context.Background(), []dlsrc.Event{ev}); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if readDigest(ds, "custom") != nil {
+		t.Error("expected no CostDigest attribute for unknown format")
 	}
 }
 

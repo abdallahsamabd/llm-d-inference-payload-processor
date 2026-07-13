@@ -225,19 +225,60 @@ func (e *RequestCostMetadataExtractor) Extract(ctx context.Context, events []dls
 	return nil
 }
 
-// extractTokenCounts pulls prompt_tokens and completion_tokens from the
-// response's usage block. Both must be present and positive; any failure
-// returns ok=false so the sample is skipped.
+// extractTokenCounts detects the response format and extracts prompt/completion
+// token counts. Both must be present and positive; any failure returns ok=false
+// so the sample is skipped.
+//
+// Supported formats:
+//   - Google/Gemini: usageMetadata.promptTokenCount / candidatesTokenCount
+//   - OpenAI:       usage.prompt_tokens / completion_tokens
+//   - Anthropic:    usage.input_tokens / output_tokens
 func extractTokenCounts(p dlsrc.ResponsePayload) (prompt, completion float64, ok bool) {
-	usage, ok := p.Response.Body["usage"].(map[string]any)
-	if !ok {
-		return 0, 0, false
+	body := p.Response.Body
+	if um, ok := body["usageMetadata"].(map[string]any); ok {
+		return extractGoogle(um)
 	}
+	if usage, ok := body["usage"].(map[string]any); ok {
+		if _, has := usage["prompt_tokens"]; has {
+			return extractOpenAI(usage)
+		}
+		if _, has := usage["input_tokens"]; has {
+			return extractAnthropic(usage)
+		}
+	}
+	return 0, 0, false
+}
+
+func extractOpenAI(usage map[string]any) (prompt, completion float64, ok bool) {
 	prompt, ok = usage["prompt_tokens"].(float64)
 	if !ok || prompt <= 0 {
 		return 0, 0, false
 	}
 	completion, ok = usage["completion_tokens"].(float64)
+	if !ok || completion <= 0 {
+		return 0, 0, false
+	}
+	return prompt, completion, true
+}
+
+func extractAnthropic(usage map[string]any) (prompt, completion float64, ok bool) {
+	prompt, ok = usage["input_tokens"].(float64)
+	if !ok || prompt <= 0 {
+		return 0, 0, false
+	}
+	completion, ok = usage["output_tokens"].(float64)
+	if !ok || completion <= 0 {
+		return 0, 0, false
+	}
+	return prompt, completion, true
+}
+
+func extractGoogle(usageMetadata map[string]any) (prompt, completion float64, ok bool) {
+	prompt, ok = usageMetadata["promptTokenCount"].(float64)
+	if !ok || prompt <= 0 {
+		return 0, 0, false
+	}
+	completion, ok = usageMetadata["candidatesTokenCount"].(float64)
 	if !ok || completion <= 0 {
 		return 0, 0, false
 	}

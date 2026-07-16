@@ -72,7 +72,7 @@ func makeResponseEvent(model string, promptTokens, completionTokens float64, omi
 
 // makeAnthropicResponseEvent builds a ResponseEventType event whose usage block
 // uses Anthropic field names (input_tokens / output_tokens).
-func makeAnthropicResponseEvent(model string, inputTokens, outputTokens float64, omitUsage bool) dlsrc.Event {
+func makeAnthropicResponseEvent(model string, inputTokens, outputTokens float64, omitUsage bool) dlsrc.Event { //nolint:unparam
 	req := requesthandling.NewInferenceRequest()
 	req.Body["model"] = model
 	resp := requesthandling.NewInferenceResponse()
@@ -94,7 +94,7 @@ func makeAnthropicResponseEvent(model string, inputTokens, outputTokens float64,
 
 // makeGoogleResponseEvent builds a ResponseEventType event whose usage block
 // uses Google/Gemini field names (usageMetadata.promptTokenCount / candidatesTokenCount).
-func makeGoogleResponseEvent(model string, promptTokenCount, candidatesTokenCount float64, omitUsage bool) dlsrc.Event {
+func makeGoogleResponseEvent(model string, promptTokenCount, candidatesTokenCount float64, omitUsage bool) dlsrc.Event { //nolint:unparam
 	req := requesthandling.NewInferenceRequest()
 	req.Body["model"] = model
 	resp := requesthandling.NewInferenceResponse()
@@ -147,7 +147,6 @@ func newTestExtractor(t *testing.T) (*RequestCostMetadataExtractor, datalayer.Da
 }
 
 // --- Factory tests ---
-
 
 func TestExtractorFactory_HonorsConfig(t *testing.T) {
 	ds := datastore.NewFakeDataStore()
@@ -360,9 +359,9 @@ func TestExtract_MultipleModels(t *testing.T) {
 	setTokenPrices(ds, "m2", 5e-7, 1e-6) // input $0.5/M, output $1/M
 
 	// Batch with interleaved models: m1, m2, m1
-	ev1 := makeResponseEvent("m1", 100, 50, false)   // cost = 100*1e-6 + 50*2e-6 = 1e-4 + 1e-4 = 2e-4
-	ev2 := makeResponseEvent("m2", 200, 100, false)  // cost = 200*5e-7 + 100*1e-6 = 1e-4 + 1e-4 = 2e-4
-	ev3 := makeResponseEvent("m1", 50, 100, false)   // cost = 50*1e-6 + 100*2e-6 = 5e-5 + 2e-4 = 2.5e-4
+	ev1 := makeResponseEvent("m1", 100, 50, false)  // cost = 100*1e-6 + 50*2e-6 = 1e-4 + 1e-4 = 2e-4
+	ev2 := makeResponseEvent("m2", 200, 100, false) // cost = 200*5e-7 + 100*1e-6 = 1e-4 + 1e-4 = 2e-4
+	ev3 := makeResponseEvent("m1", 50, 100, false)  // cost = 50*1e-6 + 100*2e-6 = 5e-5 + 2e-4 = 2.5e-4
 
 	if err := ext.Extract(context.Background(), []dlsrc.Event{ev1, ev2, ev3}); err != nil {
 		t.Fatalf("Extract: %v", err)
@@ -622,4 +621,3 @@ func TestExtract_FlushIntervalGating(t *testing.T) {
 		t.Errorf("expected published digest to have samples, got count=0")
 	}
 }
-
